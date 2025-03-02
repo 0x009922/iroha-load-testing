@@ -1,0 +1,165 @@
+<!-- livebook:{"file_entries":[{"file":{"file_system_id":"local","file_system_type":"local","path":"/home/quacumque/Projects/iroha-perf-issues/analysis.livemd"},"name":"analysis.livemd","type":"file"}]} -->
+
+# Run Analysis
+
+```elixir
+Mix.install([
+  {:jason, "~> 1.4"},
+  {:kino, "< 0.15.0"},
+  {:kino_vega_lite, "~> 0.1.13"}
+])
+```
+
+## Choose run directory
+
+```elixir
+base_dir = Kino.FS.file_path("analysis.livemd") |> Path.dirname()
+target_dirs = Path.wildcard(Path.join(base_dir, "{run,incidents}/*")) |> Enum.map(&Path.relative_to(&1, base_dir))
+
+dir_input = Kino.Input.select("Run directory", target_dirs |> Enum.map(& {&1, &1}))
+```
+
+```elixir
+dir = Path.join(base_dir, Kino.Input.read(dir_input))
+run = File.read!(Path.join(dir, "run.json")) |> Jason.decode!()
+```
+
+```elixir
+defmodule JsonLog do
+  def open!(path) do
+    Stream.resource(
+      fn -> File.open!(path) end,
+      fn file ->
+        case IO.read(file, :line) do
+          data when is_binary(data) -> {[data |> Jason.decode!()], file}
+          _ -> {:halt, file}
+        end
+      end,
+      fn file -> File.close(file) end
+    )
+  end
+end
+
+defmodule Util do
+  def parse_time!(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, time, 0} -> time
+    end
+  end
+end
+```
+
+```elixir
+alias VegaLite, as: Vl
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Metrics
+
+```elixir
+metrics =
+  JsonLog.open!(Path.join(dir, "log.json"))
+  |> Stream.filter(fn
+    %{"msg" => "gathered metrics"} -> true
+    _ -> false
+  end)
+  |> Stream.map(fn %{"time" => time, "payload" => %{"peer" => peer, "data" => data}} ->
+    %{
+      time: Util.parse_time!(time),
+      peer: peer,
+      data: data
+    }
+  end)
+  |> Enum.to_list()
+```
+
+```elixir
+w = 700
+h = 300
+
+Vl.new()
+|> Vl.concat(
+  [
+    Vl.new(width: w, height: h, title: "Blocks")
+    |> Vl.data_from_values(metrics)
+    |> Vl.mark(:line, line: true)
+    |> Vl.encode_field(:x, "time", type: :temporal)
+    |> Vl.encode_field(:y, "data.blocks", type: :quantitative)
+    |> Vl.encode_field(:color, "peer", type: :nominal),
+    Vl.new(width: w, height: h, title: "Max block and lags")
+    |> Vl.data_from_values(metrics)
+    |> Vl.transform(window: [[op: :max, field: "data.blocks", as: "max_block"]])
+    |> Vl.transform(calculate: "datum.max_block - datum.data.blocks", as: "lag")
+    |> Vl.encode_field(:x, "time", type: :temporal)
+    |> Vl.layers([
+      Vl.new()
+      |> Vl.mark(:area, interpolate: "step-after", line: [color: "#00000020"], color: "#00000010")
+      |> Vl.encode_field(:y, "max_block", type: :quantitative, aggregate: :max),
+      Vl.new()
+      |> Vl.mark(:line)
+      |> Vl.encode_field(:color, "peer", type: :nominal)
+      |> Vl.encode_field(:y, "lag", type: :quantitative)
+    ]),
+    Vl.new(width: w, height: h, title: "Queue Size")
+    |> Vl.data_from_values(metrics)
+    |> Vl.mark(:line)
+    |> Vl.encode_field(:x, "time", type: :temporal)
+    |> Vl.encode_field(:y, "data.queueSize", type: :quantitative)
+    |> Vl.encode_field(:color, "peer", type: :nominal)
+  ],
+  :vertical
+)
+```
+
+```elixir
+from_logs =
+  Task.async_stream(
+    run["peers"],
+    fn %{"label" => peer} ->
+      JsonLog.open!(Path.join(dir, "#{peer}_stdout.json"))
+      |> Stream.flat_map(fn
+        %{
+          "timestamp" => time,
+          "fields" => %{
+            "message" => "Block committed",
+            "new_height" => h,
+            "prev_role" => prev_role,
+            "next_role" => next_role
+          }
+        } ->
+          [
+            %{
+              time: Util.parse_time!(time),
+              peer: peer,
+              height:
+                case Integer.parse(h) do
+                  {int, ""} -> int
+                end,
+              prev_role: prev_role,
+              next_role: next_role
+            }
+          ]
+
+        _ ->
+          []
+      end)
+      |> Enum.to_list()
+    end,
+    timeout: 100_000
+  )
+  |> Stream.flat_map(fn {:ok, data} -> data end)
+  |> Enum.to_list()
+```
+
+```elixir
+Vl.new(title: "Role switches on block commits")
+|> Vl.data_from_values(from_logs)
+|> Vl.mark(:tick)
+|> Vl.encode_field(:color, "peer", type: :nominal)
+|> Vl.encode_field(:x, "time", type: :temporal)
+|> Vl.encode_field(:y, "next_role", type: :nominal)
+|> Vl.encode_field(:row, "peer", type: :nominal)
+```
+
+<!-- livebook:{"offset":4253,"stamp":{"token":"XCP.RVyEBzOaCf423FwTTgnhqIPNMQAu74C3Z70TpSxCxS3efLmWT7GxM_wIxMlshRNvJT8Rg6EJdHrIUfqrGkZOmnW0T1QWB31wC38VIg","version":2}} -->
