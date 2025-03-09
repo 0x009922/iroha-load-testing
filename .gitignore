@@ -1,7 +1,5 @@
-.vite
 node_modules
 /run/*
 /incidents/*
 /logs
-/dist
 .vscode

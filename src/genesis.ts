@@ -11,6 +11,7 @@ export async function generateGenesis(
     // genesisKeyPair: KeyPair
     executorPath: string
     peers: { torii: string; publicKey: string }[]
+    extraIsi?: types.InstructionBox[]
   },
 ): Promise<{
   block: types.SignedBlock
@@ -54,6 +55,7 @@ export async function generateGenesis(
         destination: adminAccount.id,
       })
     ),
+    ...params.extraIsi ?? [],
   )
 
   const block = await useKagami(params.kagami).signGenesis(

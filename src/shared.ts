@@ -23,13 +23,14 @@ export type PeersStatus = {
   peers: PeerNameStatus[]
 }
 
-export type ApiMsg =
-  | { t: 'status'; status: PeersStatus }
-  | { t: 'log' } & LogMsg
+export type ApiState = {
+  status: PeersStatus
+  logs: LogMsg[]
+}
 
-export const PublicKeySchema = z.string().transform((x) =>
-  PublicKey.fromMultihash(x)
-).or(z.custom<PublicKey>((x): x is PublicKey => x instanceof PublicKey))
+export const PublicKeySchema = z.string().transform((x) => PublicKey.fromMultihash(x)).or(
+  z.custom<PublicKey>((x): x is PublicKey => x instanceof PublicKey),
+)
 
 export type KeyPairJson = {
   publicKey: string

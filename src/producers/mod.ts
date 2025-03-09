@@ -4,11 +4,13 @@ import { deadline } from '@std/async/deadline'
 import { AccountPrep } from '../util.ts'
 import { AccountId, KeyPair } from '@iroha/core/data-model'
 import { PrivateKey, PublicKey } from '@iroha/core/crypto'
+import { JsonValue } from 'npm:type-fest@^4.33.0'
 
 export type ProducerParams = {
   chain: string
   peers: URL[]
   account: AccountPrep
+  extra?: JsonValue
 }
 
 type ProducerParamsSer = {
@@ -17,6 +19,7 @@ type ProducerParamsSer = {
   account: string
   accountPubKey: string
   accountPrivKey: string
+  extra: JsonValue
 }
 
 function paramsSer(x: ProducerParams): ProducerParamsSer {
@@ -26,6 +29,7 @@ function paramsSer(x: ProducerParams): ProducerParamsSer {
     account: x.account.id.toString(),
     accountPubKey: x.account.key.publicKey().multihash(),
     accountPrivKey: x.account.key.privateKey().multihash(),
+    extra: x.extra ?? null,
   }
 }
 
@@ -41,6 +45,7 @@ function paramsDe(x: ProducerParamsSer): ProducerParams {
       id: AccountId.parse(x.account),
       key: key,
     },
+    extra: x.extra,
   }
 }
 

@@ -100,9 +100,7 @@ export function startPeer(params: {
   }).spawn()
   let isAlive = true
 
-  const outputs = [params.stdoutPath, params.stderrPath].map((x) =>
-    Deno.openSync(x, { create: true, append: true })
-  )
+  const outputs = [params.stdoutPath, params.stderrPath].map((x) => Deno.openSync(x, { create: true, append: true }))
 
   // TODO: detect something in stderr
   const pipes = Promise.allSettled([

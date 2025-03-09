@@ -1,4 +1,4 @@
-<!-- livebook:{"file_entries":[{"file":{"file_system_id":"local","file_system_type":"local","path":"/home/quacumque/Projects/iroha-perf-issues/analysis.livemd"},"name":"analysis.livemd","type":"file"}]} -->
+<!-- livebook:{"app_settings":{"access_type":"public","output_type":"rich","slug":"iroha-run-analysis"},"file_entries":[{"file":{"file_system_id":"local","file_system_type":"local","path":"/home/quacumque/Projects/iroha-perf-issues/analysis.livemd"},"name":"analysis.livemd","type":"file"}]} -->
 
 # Run Analysis
 
@@ -6,11 +6,19 @@
 Mix.install([
   {:jason, "~> 1.4"},
   {:kino, "< 0.15.0"},
-  {:kino_vega_lite, "~> 0.1.13"}
+  {:kino_vega_lite, "~> 0.1.13"},
+  {:kino_explorer, "~> 0.1.24"}
 ])
 ```
 
 ## Choose run directory
+
+```elixir
+alias VegaLite, as: Vl
+alias Explorer.DataFrame, as: DF
+alias Explorer.Series
+require Explorer.DataFrame
+```
 
 ```elixir
 base_dir = Kino.FS.file_path("analysis.livemd") |> Path.dirname()
@@ -22,35 +30,122 @@ dir_input = Kino.Input.select("Run directory", target_dirs |> Enum.map(& {&1, &1
 ```elixir
 dir = Path.join(base_dir, Kino.Input.read(dir_input))
 run = File.read!(Path.join(dir, "run.json")) |> Jason.decode!()
+
+:ok
 ```
 
 ```elixir
-defmodule JsonLog do
-  def open!(path) do
-    Stream.resource(
-      fn -> File.open!(path) end,
-      fn file ->
-        case IO.read(file, :line) do
-          data when is_binary(data) -> {[data |> Jason.decode!()], file}
-          _ -> {:halt, file}
-        end
-      end,
-      fn file -> File.close(file) end
+logs =
+  run["peers"]
+  |> Task.async_stream(
+    fn peer ->
+      label = peer["label"]
+      log_path = Path.join(dir, "#{label}_stdout.json")
+
+      {label,
+       DF.from_ndjson!(log_path, infer_schema_length: 2_000_000)
+       |> DF.mutate(timestamp: Series.cast(timestamp, {:naive_datetime, :microsecond}))
+       |> DF.mutate(level: cast(level, :category))
+       |> DF.mutate(msg: field(fields, :message))}
+    end,
+    timeout: 10_000
+  )
+  |> Stream.map(fn {:ok, data} -> data end)
+  |> Enum.into(%{})
+
+:ok
+```
+
+```elixir
+run_log =
+  DF.from_ndjson!(Path.join(dir, "log.json"))
+  |> DF.mutate(time: cast(time, {:naive_datetime, :microsecond}))
+
+:ok
+```
+
+```elixir
+metrics_df =
+  run_log
+  |> DF.mutate(time: Series.cast(time, {:naive_datetime, :microsecond}))
+  |> DF.filter(msg == "gathered metrics")
+  |> DF.mutate(
+    peer: Series.field(payload, "peer"),
+    blocks: Series.field(payload, "data") |> Series.field("blocks"),
+    queue_size: Series.field(payload, "data") |> Series.field("queueSize")
+  )
+  |> DF.discard(["payload", "msg"])
+  |> DF.sort_by(time)
+  |> DF.mutate(max_block: Series.cumulative_max(blocks))
+  |> DF.mutate(lag: max_block - blocks)
+
+:ok
+```
+
+```elixir
+# tps_df =
+#   run_log
+#   |> DF.filter(msg == "Worker: transactions submitted")
+#   |> DF.mutate(count: field(payload, :count))
+#   |> DF.discard([:msg, :payload])
+#   |> DF.mutate(
+#     prev_gap: subtract(time, shift(time, 1)),
+#     prev_count: shift(count, 1)
+#   )
+#   |> DF.mutate(tps: (count - prev_count) / (cast(prev_gap, {:u, 64}) / 1_000_000))
+#   |> DF.select(~w(time tps))
+#   |> DF.mutate(tps: window_mean(tps, 10))
+
+# :ok
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Packets log
+
+```elixir
+df =
+  logs
+  |> Stream.map(fn {peer, df} ->
+    df
+    |> DF.mutate(
+      peer: ^peer,
+      incoming_message_ty: fields |> field(:ty),
+      block: fields |> field(:block) |> coalesce(fields |> field(:block_hash)),
+      error: fields |> field(:err)
     )
-  end
-end
+    |> DF.discard([:fields, :span, :spans])
+  end)
+  |> Enum.reduce(&DF.concat_rows/2)
+  |> DF.sort_by(timestamp)
+ 
+```
 
-defmodule Util do
-  def parse_time!(iso) do
-    case DateTime.from_iso8601(iso) do
-      {:ok, time, 0} -> time
-    end
-  end
-end
+Finding outlier block:
+
+```elixir
+df
+|> DF.filter(not is_nil(block) and not is_nil(incoming_message_ty))
+# |> DF.mutate(prev_block: shift(block, 1), next_block: shift(block, -1))
+# |> DF.mutate(outlier: block != prev_block and block != next_block)
+# |> DF.discard([:prev_block, :next_block])
+# |> DF.filter(outlier)
 ```
 
 ```elixir
-alias VegaLite, as: Vl
+first_error_time = ~N[2025-03-07 00:58:32.570]
+
+time_start = first_error_time |> NaiveDateTime.add(-70, :millisecond)
+
+df
+|> DF.filter(timestamp >= ~N[2025-03-07 00:58:32.548654])
+# |> DF.filter(peer == "peer_3")
+|> DF.filter(
+  not contains(target, "smartcontracts") and
+    target not in ["iroha_core::tx", "iroha_core::executor"]
+)
+
+# |> DF.filter(level in ["ERROR", "WARN"])
 ```
 
 <!-- livebook:{"branch_parent_index":0} -->
@@ -58,39 +153,20 @@ alias VegaLite, as: Vl
 ## Metrics
 
 ```elixir
-metrics =
-  JsonLog.open!(Path.join(dir, "log.json"))
-  |> Stream.filter(fn
-    %{"msg" => "gathered metrics"} -> true
-    _ -> false
-  end)
-  |> Stream.map(fn %{"time" => time, "payload" => %{"peer" => peer, "data" => data}} ->
-    %{
-      time: Util.parse_time!(time),
-      peer: peer,
-      data: data
-    }
-  end)
-  |> Enum.to_list()
-```
-
-```elixir
-w = 700
-h = 300
+w = 650
+h = 100
 
 Vl.new()
 |> Vl.concat(
   [
-    Vl.new(width: w, height: h, title: "Blocks")
-    |> Vl.data_from_values(metrics)
+    Vl.new(width: w, title: "Blocks")
+    |> Vl.data_from_values(metrics_df)
     |> Vl.mark(:line, line: true)
     |> Vl.encode_field(:x, "time", type: :temporal)
-    |> Vl.encode_field(:y, "data.blocks", type: :quantitative)
+    |> Vl.encode_field(:y, "blocks", type: :quantitative)
     |> Vl.encode_field(:color, "peer", type: :nominal),
-    Vl.new(width: w, height: h, title: "Max block and lags")
-    |> Vl.data_from_values(metrics)
-    |> Vl.transform(window: [[op: :max, field: "data.blocks", as: "max_block"]])
-    |> Vl.transform(calculate: "datum.max_block - datum.data.blocks", as: "lag")
+    Vl.new(width: w, title: "Max block and lags")
+    |> Vl.data_from_values(metrics_df)
     |> Vl.encode_field(:x, "time", type: :temporal)
     |> Vl.layers([
       Vl.new()
@@ -100,66 +176,386 @@ Vl.new()
       |> Vl.mark(:line)
       |> Vl.encode_field(:color, "peer", type: :nominal)
       |> Vl.encode_field(:y, "lag", type: :quantitative)
-    ]),
-    Vl.new(width: w, height: h, title: "Queue Size")
-    |> Vl.data_from_values(metrics)
-    |> Vl.mark(:line)
-    |> Vl.encode_field(:x, "time", type: :temporal)
-    |> Vl.encode_field(:y, "data.queueSize", type: :quantitative)
-    |> Vl.encode_field(:color, "peer", type: :nominal)
+    ])
+    # Vl.new(width: w, title: "TPS")
+    # |> Vl.data_from_values(tps_df)
+    # |> Vl.mark(:line, interpolate: :natural)
+    # |> Vl.encode_field(:x, "time", type: :temporal)
+    # |> Vl.encode_field(:y, "tps", type: :quantitative)
   ],
   :vertical
 )
 ```
 
-```elixir
-from_logs =
-  Task.async_stream(
-    run["peers"],
-    fn %{"label" => peer} ->
-      JsonLog.open!(Path.join(dir, "#{peer}_stdout.json"))
-      |> Stream.flat_map(fn
-        %{
-          "timestamp" => time,
-          "fields" => %{
-            "message" => "Block committed",
-            "new_height" => h,
-            "prev_role" => prev_role,
-            "next_role" => next_role
-          }
-        } ->
-          [
-            %{
-              time: Util.parse_time!(time),
-              peer: peer,
-              height:
-                case Integer.parse(h) do
-                  {int, ""} -> int
-                end,
-              prev_role: prev_role,
-              next_role: next_role
-            }
-          ]
+<!-- livebook:{"branch_parent_index":0} -->
 
-        _ ->
-          []
-      end)
-      |> Enum.to_list()
-    end,
-    timeout: 100_000
+## Blocks flow (heavy)
+
+```elixir
+df =
+  logs
+  |> Stream.map(fn {peer, df} ->
+    {:struct, fields} = df["fields"] |> Series.dtype()
+    has_actual_hash = Enum.any?(fields, fn {key, _} -> key == "actual_hash" end)
+    has_expected_hash = Enum.any?(fields, fn {key, _} -> key == "expected_hash" end)
+
+    df =
+      df
+      |> DF.mutate(
+        peer: ^peer,
+        block:
+          field(fields, :block)
+          |> coalesce(field(fields, :block_hash)),
+        # |> coalesce(field(fields, :actual_hash)),
+        height: field(fields, :new_height),
+        error: field(fields, :error)
+        # |> coalesce(field(fields, :reason))
+      )
+      |> DF.discard([:span, :spans])
+
+    if has_actual_hash and has_expected_hash do
+      df
+      |> DF.mutate(
+        actual_hash: field(fields, :actual_hash),
+        expected_hash: field(fields, :expected_hash)
+      )
+      |> DF.mutate(
+        actual_hash:
+          unless is_nil(actual_hash) do
+            re_replace(actual_hash, ~S/^\{.+BlockHeader> ([0-9a-f]+) }$/, "${1}")
+          end,
+        expected_hash:
+          unless is_nil(expected_hash) do
+            re_replace(expected_hash, ~S/^\{.+BlockHeader> ([0-9a-f]+) }$/, "${1}")
+          end
+      )
+    else
+      df
+      |> DF.mutate(
+        actual_hash: nil,
+        expected_hash: nil
+      )
+    end
+    |> DF.discard([:fields])
+  end)
+  |> Enum.reduce(fn a, b ->
+    # dbg({a, b})
+    DF.concat_rows(a, b)
+  end)
+  |> DF.sort_by(timestamp)
+  |> DF.mutate(idx: row_index(timestamp))
+```
+
+```elixir
+df
+|> DF.filter(peer == "peer_3")
+|> DF.filter(idx > 370_000)
+|> DF.filter(target |> contains("iroha_core::sumeragi"))
+
+# df
+# |> DF.filter(msg == "Peer missing voting block")
+# |> DF.pull(:idx)
+```
+
+```elixir
+df =
+  df
+  |> DF.filter(timestamp > ~N[2025-03-05 01:12:55])
+  |> DF.filter(level in ["INFO", "ERROR", "WARN"] and contains(target, "iroha_core::sumeragi"))
+  # |> DF.select([:timestamp, :msg, :peer, :block, :height, :error])
+  |> DF.slice(250..500)
+  |> DF.mutate(
+    msg:
+      cond do
+        msg == "Block created" ->
+          "1 created"
+
+        msg == "Block received" ->
+          "2 received"
+
+        msg == "Received block signatures" ->
+          "2 received signatures"
+
+        msg == "Voted for the block" ->
+          "3 voted"
+
+        msg == "Received block committed" ->
+          "8 received committed"
+
+        msg == "Block committed" ->
+          "9 committed"
+
+        msg == "Block hash mismatch" ->
+          "err: hash mismatch"
+
+        msg == "Block validation failed" ->
+          "err: validation failed"
+
+        msg == "Peer missing voting block" ->
+          "err: missing voting block"
+
+        msg ==
+            "No block produced in due time, requesting view change..." ->
+          "request view change"
+      end
   )
-  |> Stream.flat_map(fn {:ok, data} -> data end)
-  |> Enum.to_list()
 ```
 
 ```elixir
-Vl.new(title: "Role switches on block commits")
-|> Vl.data_from_values(from_logs)
-|> Vl.mark(:tick)
-|> Vl.encode_field(:color, "peer", type: :nominal)
-|> Vl.encode_field(:x, "time", type: :temporal)
-|> Vl.encode_field(:y, "next_role", type: :nominal)
-|> Vl.encode_field(:row, "peer", type: :nominal)
+df =
+  df
+  |> DF.group_by(["block"])
+  |> DF.summarise(first_time: first(timestamp))
+  |> DF.ungroup()
+  |> DF.join(df, on: :block, how: :right)
+  |> DF.filter(not is_nil(peer))
+  |> DF.mutate(
+    block:
+      block
+      # |> coalesce(expected_hash)
+  )
+  |> DF.group_by(["peer"])
+  |> DF.mutate(block_prev: shift(block, 1))
+  |> DF.mutate(
+    block:
+      if msg == "err: missing voting block" do
+        block_prev
+      else
+        block
+      end
+  )
+  |> DF.ungroup()
+
+# |> DF.filter(peer == "peer_3")
+
+# |> DF.filter(is_nil(peer))
+
+# |> DF.filter(peer == "peer_3")
+# |> DF.select(~w(peer msg block height))
+# |> DF.filter(msg == "err: missing voting block")
+
+# peer_3_df = blocks_timeline |> DF.filter(peer == "peer_3" and msg == "Block committed")
+
+# blocks_timeline =
+#   blocks_timeline
+#   |> DF.filter(block in ^peer_3_df["block"])
 ```
 
-<!-- livebook:{"offset":4253,"stamp":{"token":"XCP.RVyEBzOaCf423FwTTgnhqIPNMQAu74C3Z70TpSxCxS3efLmWT7GxM_wIxMlshRNvJT8Rg6EJdHrIUfqrGkZOmnW0T1QWB31wC38VIg","version":2}} -->
+```elixir
+Vl.new(width: 1500)
+|> Vl.data_from_values(df)
+|> Vl.mark(:line, interpolate: "monotone", point: true)
+# |> Vl.encode_field(:row, "peer")
+# |> Vl.encode_field(:shape, "block", legend: nil)
+|> Vl.encode_field(:x, "timestamp", type: :ordinal, axis: nil)
+|> Vl.encode_field(:row, "block",
+  type: :nominal,
+  sort: [field: :first_time],
+  header: [label_expr: ~S|slice(datum.value, 0, 6)|]
+)
+|> Vl.encode_field(:color, "peer")
+# |> Vl.encode_field(:color, "block", type: :nominal, scale: [scheme: "category20"])
+|> Vl.encode_field(:y, "msg", type: :nominal, axis: [grid: true], title: "Message")
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Block commit time
+
+```elixir
+df =
+  logs
+  |> Stream.map(fn {peer, df} ->
+    df
+    |> DF.filter(msg == "Block committed")
+    |> DF.mutate(
+      peer: ^peer,
+      block: field(fields, :block_hash),
+      height: field(fields, :new_height) |> cast(:integer)
+    )
+    |> DF.select([:timestamp, :block, :height, :peer])
+  end)
+  |> Enum.reduce(fn a, b ->
+    DF.concat_rows(a, b)
+  end)
+  |> DF.sort_by(timestamp)
+```
+
+```elixir
+Vl.new(width: 1500)
+|> Vl.data_from_values(df)
+|> Vl.mark(:line, point: [filled: false, fill: :white], interpolate: :monotone)
+|> Vl.encode_field(:x, "timestamp", type: :temporal)
+|> Vl.encode_field(:y, "block",
+  sort: [field: "timestamp"],
+  axis: [label_expr: ~S{slice(datum.value, 0, 6)}, grid: true]
+)
+|> Vl.encode_field(:color, "peer")
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Unique Transactions
+
+```elixir
+df =
+  logs
+  |> Task.async_stream(fn {peer, df} ->
+    df
+    |> DF.mutate(
+      msg: Explorer.Series.field(fields, "message"),
+      tx: Explorer.Series.field(fields, "tx")
+    )
+    |> DF.mutate(
+      tx_queue:
+        cond do
+          msg == "Transaction enqueued" -> "push"
+          msg == "Removed transaction from the queue" -> "pop"
+          msg == "Remove transaction from queue" -> "pop"
+          true -> nil
+        end
+    )
+    |> DF.filter(not is_nil(tx_queue))
+    |> DF.select(["timestamp", "tx", "tx_queue"])
+    |> DF.mutate(peer: ^peer)
+    |> DF.mutate(peer: cast(peer, :category))
+  end)
+  |> Stream.map(fn {:ok, data} -> data end)
+  |> Enum.reduce(&DF.concat_rows/2)
+  |> DF.sort_by(timestamp)
+
+# :ok
+```
+
+```elixir
+peers =
+  for x <- run["peers"],
+      do: x["label"]
+
+masks_df =
+  DF.new(
+    peer: peers,
+    mask:
+      Enum.with_index(peers)
+      |> Enum.map(fn {_peer, i} ->
+        :math.pow(2, i) |> trunc()
+      end)
+  )
+  |> DF.mutate(peer: cast(peer, :category))
+
+df =
+  df
+  |> DF.join(masks_df, on: :peer)
+  |> DF.group_by(["tx"])
+  |> DF.mutate(
+    vis:
+      Explorer.Series.cumulative_sum(
+        if tx_queue == "push" do
+          mask
+        else
+          -mask
+        end
+      )
+  )
+  |> DF.mutate(vis_prev: Explorer.Series.shift(vis, 1))
+  |> DF.mutate(
+    diff:
+      cond do
+        vis in ^masks_df["mask"] -> vis
+        vis_prev in ^masks_df["mask"] -> -vis_prev
+        true -> nil
+      end
+  )
+  |> DF.filter(not is_nil(diff))
+  |> DF.mutate(
+    diff_mask: abs(diff),
+    diff_step: diff / abs(diff)
+  )
+  |> DF.join(masks_df |> DF.rename(peer: "diff_peer"), on: [diff_mask: :mask])
+  |> DF.ungroup(["tx"])
+  |> DF.group_by(["diff_peer"])
+  |> DF.mutate(unique: Explorer.Series.cumulative_sum(diff_step))
+  |> DF.select(["timestamp", "diff_peer", "unique"])
+  |> DF.rename(diff_peer: "peer")
+
+:ok
+```
+
+```elixir
+# leave 100ms detail
+trunc = 100_000
+
+df =
+  df
+  |> DF.ungroup()
+  |> DF.mutate(time_trunc: cast(timestamp, {:u, 64}) |> divide(^trunc) |> cast({:u, 64}))
+  |> DF.group_by(["time_trunc", "peer"])
+  |> DF.mutate(unique_mean: mean(unique), timestamp: first(timestamp))
+  |> DF.distinct(["timestamp", "peer", "unique_mean"])
+
+:ok
+```
+
+```elixir
+
+
+Vl.new(title: "Unique Transactions and Queue Size over time", width: 650, height: 400)
+|> Vl.datasets_from_values(unique: df, metrics: metrics_df)
+|> Vl.layers([
+  Vl.new()
+  |> Vl.data(name: :unique)
+  |> Vl.mark(:area, point: false, opacity: 0.3, interpolate: :monotone)
+  |> Vl.encode_field(:x, "timestamp", type: :temporal, title: "Time")
+  |> Vl.encode_field(:color, "peer", title: "Peer")
+  |> Vl.encode_field(:y, "unique_mean",
+    type: :quantitative,
+    title: "Unique TXs",
+    stack: false
+  ),
+  Vl.new()
+  |> Vl.data(name: :metrics)
+  |> Vl.mark(:line, interpolate: :monotone)
+  |> Vl.encode_field(:x, "time", type: :temporal, title: "Time")
+  |> Vl.encode_field(:y, "queue_size", type: :quantitative, title: "Queue Size", stack: false)
+  |> Vl.encode_field(:color, "peer")
+])
+
+# |> Vl.resolve(:scale, y: :independent)
+```
+
+<!-- livebook:{"branch_parent_index":0} -->
+
+## Role dynamics
+
+```elixir
+values =
+  logs
+  |> Stream.map(fn {peer, df} ->
+    df
+    |> DF.filter(Explorer.Series.field(fields, "message") == "Block committed")
+    |> DF.mutate(
+      # height: Explorer.Series.field(fields, "new_height"),
+      role: Explorer.Series.field(fields, "next_role"),
+      peer: ^peer
+    )
+    |> DF.select(["timestamp", "role", "peer"])
+  end)
+  |> Enum.reduce(&DF.concat_rows/2)
+
+:ok
+```
+
+```elixir
+Vl.new(width: 600, title: "Role switches on block commits")
+|> Vl.data_from_values(values)
+# |> Vl.mark(:point)
+|> Vl.mark(:line, interpolate: "step-after", point: true)
+|> Vl.encode_field(:color, "peer", type: :nominal)
+|> Vl.encode_field(:x, "timestamp", type: :temporal)
+|> Vl.encode_field(:y, "role", type: :nominal, title: "Role")
+|> Vl.encode_field(:row, "peer")
+# |> Vl.encode_field(:y_offset, "peer")
+# |> Vl.encode_field(:row, "next_role", type: :nominal)
+```
+
+<!-- livebook:{"offset":14221,"stamp":{"token":"XCP.JKwu91JSb8jPADewuP_0-gB-86Vli7Zo-hMAt1-bEx1t0Gy9IAzz4myhEsJkljz_gec-x4oss5rF0lyHFde7RChBp-oOnvGQFVQIHA","version":2}} -->

@@ -11,11 +11,18 @@ import {
   Mintable,
   Name,
 } from '@iroha/core/data-model'
-import { delay } from '@std/async/delay'
 import { pooledMap } from '@std/async/pool'
-import { format as formatDuration } from '@std/fmt/duration'
+import { z } from 'zod'
+import { delay } from '@std/async/delay'
 
 const params = await workerReceiveParams()
+
+const extraParamsSchema = z.object({ tps: z.number(), chunk: z.number() })
+const extraParams = extraParamsSchema.parse(
+  params.extra,
+)
+
+export type ExtraParams = z.input<typeof extraParamsSchema>
 
 const clients = params.peers.map((peer) =>
   new Client({
@@ -47,9 +54,7 @@ await getClient().transaction(
   ]),
 ).submit({ verify: true })
 
-async function fireRandomTransaction() {
-  const client = sample(clients)
-  assert(client)
+async function fireRandomTransaction(client: Client) {
   await client.transaction(
     Executable.Instructions([
       InstructionBox.Mint.Asset({
@@ -65,31 +70,56 @@ function* rangeGen(count: number) {
   while (i < count) yield i++
 }
 
-const TPS = 2000
-const CHUNK = 200
 const POOL_LIMIT = 50
 
-let total = 0
-
-setInterval(async () => {
-  for await (
-    const _ of pooledMap(
-      POOL_LIMIT,
-      rangeGen(CHUNK),
-      async () => {
-        try {
-          await fireRandomTransaction()
-          total++
-        } catch {
-          // ignore
-        }
-      },
-    )
-  ) {
-    // no op
+function* rotateClients() {
+  let i = 0
+  while (true) {
+    yield { i, client: clients[i] }
+    i = (i + 1) % clients.length
   }
-}, 1000 / (TPS / CHUNK))
+}
 
-setInterval(() => {
-  workerLog('transactions submitted', { count: total })
-}, 500)
+
+let j = 0
+for (const { i, client } of rotateClients()) {
+  await Array.fromAsync({ length: 10 }, async () => {
+    try {
+      await fireRandomTransaction(client)
+    } catch {}
+  })
+  workerLog('submitted', { client: i, num: 10 })
+
+  await delay(250)
+  // if (++j > 30) {
+  //   j = 0
+  //   await delay(10_000)
+  // }
+}
+
+// let total = 0
+
+// setInterval(async () => {
+//   // console.time('chunk')
+//   for await (
+//     const _ of pooledMap(
+//       POOL_LIMIT,
+//       rangeGen(extraParams.chunk),
+//       async () => {
+//         try {
+//           await fireRandomTransaction()
+//           total++
+//         } catch {
+//           // ignore
+//         }
+//       },
+//     )
+//   ) {
+//     // no op
+//   }
+//   // console.timeEnd('chunk')
+// }, 1000 / (extraParams.tps / extraParams.chunk))
+
+// setInterval(() => {
+//   workerLog('transactions submitted', { count: total })
+// }, 500)

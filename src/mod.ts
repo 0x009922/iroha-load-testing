@@ -1,5 +1,5 @@
 import * as types from '@iroha/core/data-model'
-import { run as runServer } from './state-api.ts'
+import { createReporter } from './reporter.ts'
 import * as R from 'remeda'
 import { ensureDir } from '@std/fs'
 import * as path from '@std/path'
@@ -13,6 +13,7 @@ import { start } from './producers/mod.ts'
 import { generateGenesis } from './genesis.ts'
 import { getCodec } from '@iroha/core/codec'
 import { delay } from '@std/async/delay'
+import type { ExtraParams } from './producers/worker-simple.ts'
 
 const RUN_TIME = new Date().toISOString()
 const START_PORT = 8010
@@ -23,8 +24,16 @@ const BIN_CODEC = path.resolve('../iroha/target/release/', 'iroha_codec')
 const EXECUTOR_PATH = path.resolve('../iroha/defaults/executor.wasm')
 const CHAIN = 'perf'
 const PEERS = 4
-const METRICS_INTERVAL = 300
-const LOG_FILTER = 'info,iroha_core::queue=trace'
+const METRICS_INTERVAL = 150
+const LOG_FILTER = 'info,iroha_core=trace,iroha_p2p=trace'
+const QUEUE_CAPACITY = 30
+const GOSSIP_BATCH = 5
+const GOSSIP_PERIOD_MS = 1000
+const TXS_PER_BLOCK = 10n
+const WORKER_PARAMS = {
+  tps: 20,
+  chunk: 10,
+} satisfies ExtraParams
 
 const peers = R.times(PEERS, (i) => {
   const kp = types.KeyPair.random()
@@ -45,30 +54,36 @@ const peers = R.times(PEERS, (i) => {
   return { kp, portApi, label, isGenesis, env, publicAddress, toriiURL }
 })
 
-const { block: genesisBlock, genesisKeyPair, account: adminAccount } =
-  await generateGenesis({
-    kagami: BIN_KAGAMI,
-    codec: BIN_CODEC,
-    executorPath: EXECUTOR_PATH,
-    peers: peers.map((x) => ({
-      publicKey: x.kp.publicKey().multihash(),
-      torii: x.toriiURL.href,
-    })),
-    chain: CHAIN,
-  })
+const { block: genesisBlock, genesisKeyPair, account: adminAccount } = await generateGenesis({
+  kagami: BIN_KAGAMI,
+  codec: BIN_CODEC,
+  executorPath: EXECUTOR_PATH,
+  peers: peers.map((x) => ({
+    publicKey: x.kp.publicKey().multihash(),
+    torii: x.toriiURL.href,
+  })),
+  chain: CHAIN,
+  extraIsi: [
+    types.InstructionBox.SetParameter.Block.MaxTransactions(
+      new types.NonZero(TXS_PER_BLOCK),
+    ),
+  ],
+})
 
 const sharedConfig = {
   chain: CHAIN,
   genesis: { public_key: genesisKeyPair.publicKey().multihash() },
-  trusted_peers: peers.map((x) =>
-    `${x.kp.publicKey().multihash()}@${x.publicAddress}`
-  ),
+  trusted_peers: peers.map((x) => `${x.kp.publicKey().multihash()}@${x.publicAddress}`),
   logger: {
     level: LOG_FILTER,
     format: 'json',
   },
   snapshot: { mode: 'disabled' },
-  queue: { capacity: 5000 },
+  queue: { capacity: QUEUE_CAPACITY },
+  network: {
+    transaction_gossip_period_ms: GOSSIP_PERIOD_MS,
+    transaction_gossip_size: GOSSIP_BATCH,
+  },
 }
 
 console.log('  ' + colors.green(`create ${colors.bold(RUN_DIR)}`))
@@ -98,7 +113,9 @@ await Deno.writeFile(
 )
 
 await using logger = await useLogger(path.join(RUN_DIR, 'log.json'))
-await using api = runServer({
+await using _txLogger = await useLogger(path.join(RUN_DIR, 'tx_log.json'))
+
+using reporter = createReporter({
   peers: peers.map((x) => ({
     name: x.label,
     blocks: 0,
@@ -108,13 +125,13 @@ await using api = runServer({
     peers: 0,
     viewChanges: 0,
   })),
-})
+}, { queueCapacity: QUEUE_CAPACITY })
 const log = (msg: string, payload?: unknown) => {
   logger.emit(msg, payload)
-  api.sendLog({
-    date: new Date().toISOString(),
-    msg: `${msg} ${Deno.inspect(payload, { colors: false, depth: 1 })}`,
-  })
+  // reporter.sendLog({
+  //   date: new Date().toISOString(),
+  //   msg: `${msg} ${Deno.inspect(payload, { colors: false, depth: 1 })}`,
+  // })
 }
 
 const peersSpawned = peers.map((peer) => {
@@ -131,7 +148,7 @@ const peersSpawned = peers.map((peer) => {
 
   spawned.events.on('exit', ({ code }) => {
     log('peer exited', { peer: peer.label, code })
-    api.updateStatus(peer.label, { running: false })
+    reporter.updateStatus(peer.label, { running: false })
   })
 
   spawned.events.on('msg', (msg) => {
@@ -139,7 +156,7 @@ const peersSpawned = peers.map((peer) => {
   })
 
   log(`started peer`, { peer: peer.label })
-  api.updateStatus(peer.label, { running: true })
+  reporter.updateStatus(peer.label, { running: true })
 
   return spawned
 })
@@ -157,7 +174,7 @@ using metrics = useMetrics(
 
 metrics.events.on('status', ({ peer, data }) => {
   log('gathered metrics', { peer, data })
-  api.updateStatus(peer, {
+  reporter.updateStatus(peer, {
     blocks: Number(data.blocks),
     transactions: {
       accepted: Number(data.txsAccepted),
@@ -169,6 +186,10 @@ metrics.events.on('status', ({ peer, data }) => {
   })
 })
 
+// metrics.events.on('transaction-status', ({ peer, tx, status }) => {
+//   txLogger.emit('update', { peer, tx, status })
+// })
+
 log('set up done, waiting for genesis...')
 await metrics.events.once('genesis-committed')
 
@@ -179,6 +200,7 @@ using producer = start(
     chain: CHAIN,
     peers: peers.map((x) => x.toriiURL),
     account: adminAccount,
+    extra: WORKER_PARAMS,
   },
 )
 
