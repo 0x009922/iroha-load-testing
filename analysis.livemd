@@ -558,4 +558,4 @@ Vl.new(width: 600, title: "Role switches on block commits")
 # |> Vl.encode_field(:row, "next_role", type: :nominal)
 ```
 
-<!-- livebook:{"offset":14221,"stamp":{"token":"XCP.JKwu91JSb8jPADewuP_0-gB-86Vli7Zo-hMAt1-bEx1t0Gy9IAzz4myhEsJkljz_gec-x4oss5rF0lyHFde7RChBp-oOnvGQFVQIHA","version":2}} -->
+<!-- livebook:{"offset":14221,"stamp":{"token":"XCP.j4sYbXoHGsrouuevoxrFeD-ujSgaSMsSqH6tJsNfW7bTbH3fjFhyMRA2VofvHS0b2rkVaH-PhSgeD9EakhdMBhpBdXeaMMQKDDwvBA","version":2}} -->

@@ -1,5 +1,3 @@
-import * as colors from '@std/fmt/colors'
-
 export interface Logger {
   emit: (message: string, payload?: unknown) => void
 }

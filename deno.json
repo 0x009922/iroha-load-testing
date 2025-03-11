@@ -4,9 +4,12 @@
     "run": "deno run -A src/mod.ts"
   },
   "fmt": { "semiColons": false, "singleQuote": true, "lineWidth": 120 },
-  "compilerOptions": {"lib": [
-    "deno.window", "dom"
-  ]},
+  "compilerOptions": {
+    "lib": [
+      "deno.window",
+      "dom"
+    ]
+  },
   "nodeModulesDir": "auto",
   "imports": {
     "@cliffy/ansi": "jsr:@cliffy/ansi@1.0.0-rc.7",

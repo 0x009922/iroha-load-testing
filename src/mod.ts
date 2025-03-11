@@ -13,8 +13,6 @@ import { start } from './producers/mod.ts'
 import { generateGenesis } from './genesis.ts'
 import { getCodec } from '@iroha/core/codec'
 import { delay } from '@std/async/delay'
-import type { ExtraParams } from './producers/worker-simple.ts'
-
 const RUN_TIME = new Date().toISOString()
 const START_PORT = 8010
 const RUN_DIR = `./run/${RUN_TIME}`
@@ -26,14 +24,12 @@ const CHAIN = 'perf'
 const PEERS = 4
 const METRICS_INTERVAL = 150
 const LOG_FILTER = 'info,iroha_core=trace,iroha_p2p=trace'
-const QUEUE_CAPACITY = 30
-const GOSSIP_BATCH = 5
-const GOSSIP_PERIOD_MS = 1000
+const QUEUE_CAPACITY = 100
+const TX_GOSSIP_BATCH = 50
+const TX_GOSSIP_PERIOD_MS = 5000
+const BLOCKS_GOSSIP_BATCH = 10
+const BLOCKS_GOSSIP_PERIOD_MS = 2000
 const TXS_PER_BLOCK = 10n
-const WORKER_PARAMS = {
-  tps: 20,
-  chunk: 10,
-} satisfies ExtraParams
 
 const peers = R.times(PEERS, (i) => {
   const kp = types.KeyPair.random()
@@ -81,8 +77,10 @@ const sharedConfig = {
   snapshot: { mode: 'disabled' },
   queue: { capacity: QUEUE_CAPACITY },
   network: {
-    transaction_gossip_period_ms: GOSSIP_PERIOD_MS,
-    transaction_gossip_size: GOSSIP_BATCH,
+    transaction_gossip_period_ms: TX_GOSSIP_PERIOD_MS,
+    transaction_gossip_size: TX_GOSSIP_BATCH,
+    block_gossip_period_ms: BLOCKS_GOSSIP_PERIOD_MS,
+    block_gossip_size: BLOCKS_GOSSIP_BATCH,
   },
 }
 
@@ -128,10 +126,6 @@ using reporter = createReporter({
 }, { queueCapacity: QUEUE_CAPACITY })
 const log = (msg: string, payload?: unknown) => {
   logger.emit(msg, payload)
-  // reporter.sendLog({
-  //   date: new Date().toISOString(),
-  //   msg: `${msg} ${Deno.inspect(payload, { colors: false, depth: 1 })}`,
-  // })
 }
 
 const peersSpawned = peers.map((peer) => {
@@ -200,7 +194,6 @@ using producer = start(
     chain: CHAIN,
     peers: peers.map((x) => x.toriiURL),
     account: adminAccount,
-    extra: WORKER_PARAMS,
   },
 )
 
