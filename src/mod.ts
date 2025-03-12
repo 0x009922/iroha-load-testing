@@ -22,14 +22,14 @@ const BIN_CODEC = path.resolve('../iroha/target/release/', 'iroha_codec')
 const EXECUTOR_PATH = path.resolve('../iroha/defaults/executor.wasm')
 const CHAIN = 'perf'
 const PEERS = 4
-const METRICS_INTERVAL = 150
-const LOG_FILTER = 'info,iroha_core=trace,iroha_p2p=trace'
-const QUEUE_CAPACITY = 100
-const TX_GOSSIP_BATCH = 50
-const TX_GOSSIP_PERIOD_MS = 5000
-const BLOCKS_GOSSIP_BATCH = 10
+const METRICS_INTERVAL = 300
+const LOG_FILTER = 'info'
+const QUEUE_CAPACITY = 65536
+const TX_GOSSIP_BATCH = 5000
+const TX_GOSSIP_PERIOD_MS = 1000
+const BLOCKS_GOSSIP_BATCH = 40
 const BLOCKS_GOSSIP_PERIOD_MS = 2000
-const TXS_PER_BLOCK = 10n
+const TXS_PER_BLOCK = 512n
 
 const peers = R.times(PEERS, (i) => {
   const kp = types.KeyPair.random()

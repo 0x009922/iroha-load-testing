@@ -1,7 +1,7 @@
 import { Client } from '@iroha/client'
 import { workerLog, workerReceiveParams } from './mod.ts'
 import { AssetDefinitionId, AssetId, Executable, InstructionBox, Name } from '@iroha/core/data-model'
-import { delay } from '@std/async/delay'
+import { delay, pooledMap } from '@std/async'
 
 const params = await workerReceiveParams()
 
@@ -27,27 +27,29 @@ async function fireRandomTransaction(client: Client) {
   ).submit({ verify: false })
 }
 
-function* rotateClients() {
-  let i = 0
-  while (true) {
-    yield { i, client: clients[i] }
-    i = (i + 1) % clients.length
-  }
+function* lazyRange(len: number) {
+  for (let i = 0; i < len; i++) yield i
 }
 
-const AMOUNT = 10
+const TXS_START = 25
+const TXS_INC = 25
+let amount = TXS_START
+
 const DELAY = 250
-for (const { i, client } of rotateClients()) {
+while (true) {
   const stats = { ok: 0, err: 0 }
-  await Array.fromAsync({ length: AMOUNT }, async () => {
-    try {
-      await fireRandomTransaction(client)
-      stats.ok++
-    } catch {
-      stats.err++
-    }
+  await Array.fromAsync(clients, async (client) => {
+    await Array.fromAsync(pooledMap(10, lazyRange(amount), async () => {
+      try {
+        await fireRandomTransaction(client)
+        stats.ok++
+      } catch {
+        stats.err++
+      }
+    }))
   })
-  workerLog('submitted', { client: i, num: AMOUNT, ...stats })
+  workerLog('submitted', { num: stats.ok + stats.err, ...stats })
+  amount += TXS_INC
 
   await delay(DELAY)
 }

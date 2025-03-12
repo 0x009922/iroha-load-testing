@@ -103,3 +103,18 @@ Metrics:
 This shows that the blocks `peer_3` commits later than others are in sync with others:
 
 ![later blocks](./vis_later_blocks.svg)
+
+## CASE - max tps
+
+| Parameter            | Value         |
+| -------------------- | ------------- |
+| Peers                | 4             |
+| Txs per block        | 512           |
+| Block time           | Default (6s?) |
+| Queue Capacity       | 65,536        |
+| Txs gossip batch     | 5000          |
+| Txs gossip interval  | 1s            |
+| Blocks gossip batch  | 40            |
+| Blocks gossip period | 1s            |
+
+![max tps](./vis_max_tps.svg)

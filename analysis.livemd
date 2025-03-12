@@ -4,10 +4,10 @@
 
 ```elixir
 Mix.install([
-  {:jason, "~> 1.4"},
-  {:kino, "< 0.15.0"},
   {:kino_vega_lite, "~> 0.1.13"},
-  {:kino_explorer, "~> 0.1.24"}
+  {:kino_explorer, "~> 0.1.24"},
+  {:kino, "~> 0.15.3"},
+  {:jason, "~> 1.4"}
 ])
 ```
 
@@ -44,7 +44,7 @@ logs =
 
       {label,
        DF.from_ndjson!(log_path, infer_schema_length: 2_000_000)
-       |> DF.mutate(timestamp: Series.cast(timestamp, {:naive_datetime, :microsecond}))
+       |> DF.mutate(timestamp: Series.cast(timestamp, {:naive_datetime, :millisecond}))
        |> DF.mutate(level: cast(level, :category))
        |> DF.mutate(msg: field(fields, :message))}
     end,
@@ -83,20 +83,24 @@ metrics_df =
 ```
 
 ```elixir
-# tps_df =
-#   run_log
-#   |> DF.filter(msg == "Worker: transactions submitted")
-#   |> DF.mutate(count: field(payload, :count))
-#   |> DF.discard([:msg, :payload])
-#   |> DF.mutate(
-#     prev_gap: subtract(time, shift(time, 1)),
-#     prev_count: shift(count, 1)
-#   )
-#   |> DF.mutate(tps: (count - prev_count) / (cast(prev_gap, {:u, 64}) / 1_000_000))
-#   |> DF.select(~w(time tps))
-#   |> DF.mutate(tps: window_mean(tps, 10))
+# seconds
+time_bin = 7
 
-# :ok
+tps_df =
+  run_log
+  |> DF.filter(msg == "Worker: submitted")
+  |> DF.mutate(count: field(payload, :ok) + field(payload, :err))
+  |> DF.discard([:msg, :payload])
+  |> DF.mutate(
+    time_bin: cast(time, {:u, 64}) |> divide(^(time_bin * 1_000_000)) |> cast({:u, 64})
+  )
+  |> DF.group_by("time_bin")
+  |> DF.summarise(count_mean: sum(count) / ^time_bin, time: first(time))
+  |> DF.ungroup()
+  |> DF.discard(["time_bin"])
+  |> DF.mutate(count_mean: window_mean(count_mean, 10))
+
+:ok
 ```
 
 <!-- livebook:{"branch_parent_index":0} -->
@@ -156,32 +160,28 @@ df
 w = 650
 h = 100
 
+time_scale = [domain: [metrics_df["time"] |> Series.min(), metrics_df["time"] |> Series.max()]]
+
 Vl.new()
 |> Vl.concat(
   [
     Vl.new(width: w, title: "Blocks")
     |> Vl.data_from_values(metrics_df)
-    |> Vl.mark(:line, line: true)
-    |> Vl.encode_field(:x, "time", type: :temporal)
+    |> Vl.mark(:line, interpolate: :monotone)
+    |> Vl.encode_field(:x, "time", type: :temporal, scale: time_scale)
     |> Vl.encode_field(:y, "blocks", type: :quantitative)
     |> Vl.encode_field(:color, "peer", type: :nominal),
-    Vl.new(width: w, title: "Max block and lags")
+    Vl.new(width: w, title: "Queue")
     |> Vl.data_from_values(metrics_df)
-    |> Vl.encode_field(:x, "time", type: :temporal)
-    |> Vl.layers([
-      Vl.new()
-      |> Vl.mark(:area, interpolate: "step-after", line: [color: "#00000020"], color: "#00000010")
-      |> Vl.encode_field(:y, "max_block", type: :quantitative, aggregate: :max),
-      Vl.new()
-      |> Vl.mark(:line)
-      |> Vl.encode_field(:color, "peer", type: :nominal)
-      |> Vl.encode_field(:y, "lag", type: :quantitative)
-    ])
-    # Vl.new(width: w, title: "TPS")
-    # |> Vl.data_from_values(tps_df)
-    # |> Vl.mark(:line, interpolate: :natural)
-    # |> Vl.encode_field(:x, "time", type: :temporal)
-    # |> Vl.encode_field(:y, "tps", type: :quantitative)
+    |> Vl.mark(:line, interpolate: :monotone)
+    |> Vl.encode_field(:x, "time", type: :temporal, scale: time_scale)
+    |> Vl.encode_field(:y, "queue_size", type: :quantitative)
+    |> Vl.encode_field(:color, "peer"),
+    Vl.new(width: w, title: "TPS")
+    |> Vl.data_from_values(tps_df)
+    |> Vl.mark(:line, interpolate: :natural)
+    |> Vl.encode_field(:x, "time", type: :temporal, scale: time_scale)
+    |> Vl.encode_field(:y, "count_mean", type: :quantitative)
   ],
   :vertical
 )
@@ -558,4 +558,4 @@ Vl.new(width: 600, title: "Role switches on block commits")
 # |> Vl.encode_field(:row, "next_role", type: :nominal)
 ```
 
-<!-- livebook:{"offset":14221,"stamp":{"token":"XCP.j4sYbXoHGsrouuevoxrFeD-ujSgaSMsSqH6tJsNfW7bTbH3fjFhyMRA2VofvHS0b2rkVaH-PhSgeD9EakhdMBhpBdXeaMMQKDDwvBA","version":2}} -->
+<!-- livebook:{"offset":14213,"stamp":{"token":"XCP.ISetrJg0lWwGQSKa9rwANprB8ClG3oWjIm2UkPlK3LemdJM3fGaGBH3ukti82pEf9hv5kMwUGK3YrDVtnWkDPklfZWF5DuvrwdmrLQ","version":2}} -->
