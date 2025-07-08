@@ -1,14 +1,12 @@
 import * as types from '@iroha/core/data-model'
 import { getCodec } from '@iroha/core/codec'
-import { useIrohaCodec, useKagami } from './iroha-bin.ts'
+import { useKagami } from './iroha-bin.ts'
 import { AccountPrep, randomAccount } from './util.ts'
 
 export async function generateGenesis(
   params: {
     kagami: string
-    codec: string
     chain: string
-    // genesisKeyPair: KeyPair
     executorPath: string
     peers: { torii: string; publicKey: string }[]
     extraIsi?: types.InstructionBox[]
@@ -34,7 +32,7 @@ export async function generateGenesis(
     }),
     types.InstructionBox.Register.AssetDefinition({
       id: asset,
-      type: types.AssetType.Numeric({ scale: 0 }),
+      spec: { scale: 0 },
       mintable: types.Mintable.Infinitely,
       logo: null,
       metadata: [],
@@ -58,11 +56,13 @@ export async function generateGenesis(
     ...params.extraIsi ?? [],
   )
 
-  const block = await useKagami(params.kagami).signGenesis(
+  const kagami =  useKagami(params.kagami)
+
+  const block = await kagami.signGenesis(
     JSON.stringify({
       chain: params.chain,
       executor: params.executorPath,
-      instructions: await useIrohaCodec(params.codec).scaleToJson(
+      instructions: await kagami.scaleToJson(
         'Vec<InstructionBox>',
         types.Vec.with(getCodec(types.InstructionBox)).encode(instructions),
       ),

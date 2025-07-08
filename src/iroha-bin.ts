@@ -5,11 +5,9 @@ import { getCodec } from '@iroha/core'
 
 export interface Kagami {
   signGenesis: (json: string, key: types.KeyPair) => Promise<types.SignedBlock>
-}
-
-export interface IrohaCodec {
   scaleToJson: (type: string, data: Uint8Array) => Promise<unknown>
 }
+
 
 export function useKagami(bin: string): Kagami {
   return {
@@ -37,14 +35,9 @@ export function useKagami(bin: string): Kagami {
 
       return block
     },
-  }
-}
-
-export function useIrohaCodec(bin: string): IrohaCodec {
-  return {
     scaleToJson: async (type, scale) => {
       const child = new Deno.Command(bin, {
-        args: ['scale-to-json', '--type', type],
+        args: ['codec', 'scale-to-json', '--type', type],
         stdin: 'piped',
         stdout: 'piped',
         stderr: 'inherit',
@@ -62,6 +55,7 @@ export function useIrohaCodec(bin: string): IrohaCodec {
     },
   }
 }
+
 
 export interface StartPeerReturn {
   /**

@@ -13,17 +13,17 @@ import { start } from './producers/mod.ts'
 import { generateGenesis } from './genesis.ts'
 import { getCodec } from '@iroha/core/codec'
 import { delay } from '@std/async/delay'
+  
 const RUN_TIME = new Date().toISOString()
 const START_PORT = 8010
 const RUN_DIR = `./run/${RUN_TIME}`
 const BIN_KAGAMI = path.resolve('../iroha/target/release/', 'kagami')
 const BIN_IROHAD = path.resolve('../iroha/target/release/', 'irohad')
-const BIN_CODEC = path.resolve('../iroha/target/release/', 'iroha_codec')
 const EXECUTOR_PATH = path.resolve('../iroha/defaults/executor.wasm')
 const CHAIN = 'perf'
 const PEERS = 4
 const METRICS_INTERVAL = 300
-const LOG_FILTER = 'info'
+const LOG_FILTER = 'info,tower_http=debug'
 const QUEUE_CAPACITY = 65536
 const TX_GOSSIP_BATCH = 5000
 const TX_GOSSIP_PERIOD_MS = 1000
@@ -52,7 +52,6 @@ const peers = R.times(PEERS, (i) => {
 
 const { block: genesisBlock, genesisKeyPair, account: adminAccount } = await generateGenesis({
   kagami: BIN_KAGAMI,
-  codec: BIN_CODEC,
   executorPath: EXECUTOR_PATH,
   peers: peers.map((x) => ({
     publicKey: x.kp.publicKey().multihash(),
@@ -71,7 +70,7 @@ const sharedConfig = {
   genesis: { public_key: genesisKeyPair.publicKey().multihash() },
   trusted_peers: peers.map((x) => `${x.kp.publicKey().multihash()}@${x.publicAddress}`),
   logger: {
-    level: LOG_FILTER,
+    filter: LOG_FILTER,
     format: 'json',
   },
   snapshot: { mode: 'disabled' },
@@ -171,7 +170,7 @@ metrics.events.on('status', ({ peer, data }) => {
   reporter.updateStatus(peer, {
     blocks: Number(data.blocks),
     transactions: {
-      accepted: Number(data.txsAccepted),
+      accepted: Number(data.txsApproved),
       rejected: Number(data.txsRejected),
     },
     queue: Number(data.queueSize),

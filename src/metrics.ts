@@ -1,4 +1,4 @@
-import { ApiTelemetry, HttpTransport, WebSocketAPI } from '@iroha/client'
+import { HttpTransport, WebSocketAPI, TelemetryAPI } from '@iroha/client'
 import Emittery from 'emittery'
 import * as types from '@iroha/core/data-model'
 import { effectScope, getCurrentScope, onScopeDispose, reactive, watch } from 'vue'
@@ -56,7 +56,7 @@ function setup(
   interval: number,
   events: Events,
 ) {
-  const api = new ApiTelemetry(new HttpTransport(torii))
+  const api = new TelemetryAPI(new HttpTransport(torii))
   const ws = new WebSocketAPI(torii)
 
   useEvents({
